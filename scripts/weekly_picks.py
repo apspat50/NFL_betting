@@ -188,9 +188,6 @@ def main():
     else:
         picks = find_edges(predictions, odds, min_edge_pct=args.min_edge)
     logger.info("Found %d qualifying edges", len(picks))
-   
-    picks = find_edges(predictions, odds, min_edge_pct=args.min_edge)
-    logger.info("Found %d qualifying edges", len(picks))
 
     game_day_label = target_date.strftime("%A %b %d")
     send_telegram(format_picks(picks, game_day_label))
