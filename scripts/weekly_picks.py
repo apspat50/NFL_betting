@@ -1,22 +1,26 @@
 """
 weekly_picks.py
 
-The main orchestrator -- run once a week during the season (e.g. Tuesday
-morning after props post) via GitHub Actions or manually.
+The main orchestrator -- runs multiple times per week, once before each
+NFL game night (Thursday, Sunday, Monday), via GitHub Actions or
+manually.
 
 1. Loads current-season data through last week.
 2. Builds this week's feature rows for every player likely to play.
 3. Loads trained models and predicts mean/std per stat.
-4. Pulls live sportsbook lines via The Odds API.
-5. Finds edges and sends picks to Telegram.
-
-Simpler than the MLB daily pipeline: one run per week, no intraday
-re-scraping, no live-line polling.
+4. Pulls live sportsbook lines via ParlayAPI.
+5. Filters picks down to only the game(s) happening TODAY, so a
+   Thursday run only sends the Thursday Night Football game, a Sunday
+   run sends the full Sunday slate, and a Monday run sends Monday
+   Night Football -- one script, three schedules, no separate logic
+   needed per game night.
+6. Finds edges and sends picks to Telegram.
 """
 
 from __future__ import annotations
 
 import argparse
+import datetime as dt
 import logging
 import os
 import sys
@@ -24,11 +28,15 @@ from pathlib import Path
 
 import pandas as pd
 import requests
+from dotenv import load_dotenv
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
+load_dotenv()
+
 from data_loader import (
     load_weekly_stats, load_snap_counts, load_schedules, team_defense_allowed,
+    get_current_season_and_week,
 )
 from feature_engineering import build_feature_set, FEATURE_COLUMNS
 from props_model import PropModel
@@ -37,6 +45,12 @@ from edge_finder import find_edges
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+
+try:
+    from zoneinfo import ZoneInfo
+    EASTERN = ZoneInfo("America/New_York")
+except Exception:  # pragma: no cover - fallback if tzdata isn't installed
+    EASTERN = None
 
 
 def build_this_week_features(season: int, upcoming_week: int) -> pd.DataFrame:
@@ -88,6 +102,22 @@ def predict_all(features: pd.DataFrame) -> pd.DataFrame:
     return pd.concat(preds, ignore_index=True)
 
 
+def filter_to_game_day(odds: pd.DataFrame, target_date: dt.date) -> pd.DataFrame:
+    """
+    Keeps only props for games whose kickoff falls on `target_date`
+    (Eastern time, since that's how NFL game nights are actually
+    scheduled/discussed -- a game that shows as the next UTC day could
+    still be "tonight" locally).
+    """
+    if odds.empty:
+        return odds
+    commence = pd.to_datetime(odds["commence_time"], utc=True)
+    if EASTERN is not None:
+        commence = commence.dt.tz_convert(EASTERN)
+    local_date = commence.dt.date
+    return odds[local_date == target_date].copy()
+
+
 def send_telegram(message: str):
     token = os.environ.get("TELEGRAM_BOT_TOKEN")
     chat_id = os.environ.get("TELEGRAM_CHAT_ID")
@@ -103,10 +133,10 @@ def send_telegram(message: str):
     resp.raise_for_status()
 
 
-def format_picks(picks: pd.DataFrame) -> str:
+def format_picks(picks: pd.DataFrame, game_day_label: str) -> str:
     if picks.empty:
-        return "No qualifying edges found this week."
-    lines = ["*NFL Prop Picks*\n"]
+        return f"No qualifying edges found for {game_day_label}."
+    lines = [f"*NFL Prop Picks — {game_day_label}*\n"]
     for _, r in picks.head(20).iterrows():
         lines.append(
             f"{r['player_name']} — {r['side']} {r['line']} {r['stat'].replace('_', ' ')} "
@@ -118,23 +148,46 @@ def format_picks(picks: pd.DataFrame) -> str:
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--season", type=int, required=True)
-    parser.add_argument("--week", type=int, required=True)
+    parser.add_argument("--season", type=int, default=None,
+                         help="Defaults to auto-detected current season if omitted.")
+    parser.add_argument("--week", type=int, default=None,
+                         help="Defaults to auto-detected current week if omitted.")
     parser.add_argument("--min-edge", type=float, default=0.03)
+    parser.add_argument(
+        "--game-date", type=str, default=None,
+        help="YYYY-MM-DD to filter picks to a specific game day (Eastern time). "
+             "Defaults to today -- this is what makes the Thu/Sun/Mon schedule work "
+             "without separate config per run.",
+    )
     args = parser.parse_args()
 
-    logger.info("Building features for season=%s week=%s", args.season, args.week)
-    features = build_this_week_features(args.season, args.week)
+    season, week = args.season, args.week
+    if season is None or week is None:
+        auto_season, auto_week = get_current_season_and_week()
+        season = season or auto_season
+        week = week or auto_week
+        logger.info("Auto-detected season=%s week=%s", season, week)
+
+    target_date = (
+        dt.datetime.strptime(args.game_date, "%Y-%m-%d").date()
+        if args.game_date else dt.date.today()
+    )
+
+    logger.info("Building features for season=%s week=%s", season, week)
+    features = build_this_week_features(season, week)
     predictions = predict_all(features)
 
     logger.info("Fetching sportsbook props")
     odds = OddsClient().fetch_week_props()
+    odds = filter_to_game_day(odds, target_date)
+    logger.info("%d prop rows remain after filtering to %s", len(odds), target_date)
 
     picks = find_edges(predictions, odds, min_edge_pct=args.min_edge)
     logger.info("Found %d qualifying edges", len(picks))
 
-    send_telegram(format_picks(picks))
-    picks.to_csv(f"cache/picks_{args.season}_wk{args.week}.csv", index=False)
+    game_day_label = target_date.strftime("%A %b %d")
+    send_telegram(format_picks(picks, game_day_label))
+    picks.to_csv(f"cache/picks_{season}_wk{week}_{target_date}.csv", index=False)
 
 
 if __name__ == "__main__":
