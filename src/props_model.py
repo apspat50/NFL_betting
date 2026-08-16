@@ -123,3 +123,4 @@ def train_all(
         model.save()
         trained[stat] = model
     return trained
+    
