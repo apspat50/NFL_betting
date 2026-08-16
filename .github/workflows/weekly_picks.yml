@@ -1,19 +1,24 @@
-name: Weekly NFL Picks
+name: NFL Picks - Game Day Runs
 
 on:
   schedule:
-    # Every Tuesday 13:00 UTC (~9am ET), after most books post the week's props
-    - cron: "0 13 * * 2"
+    # All times UTC. NFL is Eastern-time; these land around mid-morning
+    # ET whether EDT (UTC-4, Sep-early Nov) or EST (UTC-5, rest of season) --
+    # early enough that props are posted, well before any kickoff.
+    - cron: "0 14 * * 4"  # Thursday ~10am ET -- before Thursday Night Football
+    - cron: "0 14 * * 0"  # Sunday ~10am ET -- before the full Sunday slate
+    - cron: "0 14 * * 1"  # Monday ~10am ET -- before Monday Night Football
   workflow_dispatch:
     inputs:
       season:
-        description: "Season year"
-        required: true
-        default: "2026"
+        description: "Season year (leave blank to auto-detect)"
+        required: false
       week:
-        description: "NFL week number"
-        required: true
-        default: "1"
+        description: "NFL week number (leave blank to auto-detect)"
+        required: false
+      game_date:
+        description: "YYYY-MM-DD to filter picks to (leave blank for today)"
+        required: false
 
 jobs:
   run-picks:
@@ -26,20 +31,23 @@ jobs:
           python-version: "3.11"
 
       - name: Install dependencies
-        run: pip install -r requirements.txt
+        run: |
+          pip install nfl_data_py --no-deps
+          pip install -r requirements.txt
 
-      - name: Run weekly picks
+      - name: Run picks for today's game(s)
         env:
           PARLAYAPI_KEY: ${{ secrets.PARLAYAPI_KEY }}
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
         run: |
           python scripts/weekly_picks.py \
-            --season "${{ github.event.inputs.season || '2026' }}" \
-            --week "${{ github.event.inputs.week || '1' }}"
+            ${{ github.event.inputs.season && format('--season {0}', github.event.inputs.season) || '' }} \
+            ${{ github.event.inputs.week && format('--week {0}', github.event.inputs.week) || '' }} \
+            ${{ github.event.inputs.game_date && format('--game-date {0}', github.event.inputs.game_date) || '' }}
 
       - name: Upload picks artifact
         uses: actions/upload-artifact@v4
         with:
-          name: picks
+          name: picks-${{ github.run_id }}
           path: cache/*.csv
