@@ -31,6 +31,7 @@ import requests
 from dotenv import load_dotenv
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
+Path("cache").mkdir(exist_ok=True)
 
 load_dotenv()
 
