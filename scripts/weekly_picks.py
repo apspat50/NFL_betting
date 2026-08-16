@@ -182,6 +182,13 @@ def main():
     odds = filter_to_game_day(odds, target_date)
     logger.info("%d prop rows remain after filtering to %s", len(odds), target_date)
 
+    if odds.empty:
+        logger.info("No games scheduled for %s -- nothing to compare against.", target_date)
+        picks = pd.DataFrame()
+    else:
+        picks = find_edges(predictions, odds, min_edge_pct=args.min_edge)
+    logger.info("Found %d qualifying edges", len(picks))
+   
     picks = find_edges(predictions, odds, min_edge_pct=args.min_edge)
     logger.info("Found %d qualifying edges", len(picks))
 
