@@ -29,54 +29,64 @@ WEEKLY_COLUMNS = [
 ]
 
 
-@lru_cache(maxsize=8)
+def _load_per_year_safe(loader, seasons: tuple[int, ...], label: str) -> pd.DataFrame:
+    """
+    Calls an nfl_data_py loader one year at a time and skips any year
+    that isn't published yet (404), instead of one missing year failing
+    the entire multi-season load. This is what makes the pipeline keep
+    working during preseason, when the current season has no data yet.
+    """
+    frames = []
+    for year in seasons:
+        try:
+            frames.append(loader([year]))
+        except Exception as e:
+            logger.warning("%s: season %s not available yet, skipping: %s", label, year, e)
+    if not frames:
+        raise RuntimeError(f"No {label} data available for any of seasons={seasons}")
+    return pd.concat(frames, ignore_index=True)
+
+
 @lru_cache(maxsize=8)
 def load_weekly_stats(seasons: tuple[int, ...]) -> pd.DataFrame:
     """
     Weekly player-level stat lines for the given seasons.
     Cached in-process since this is re-used across every prop model.
-
-    Skips any season nflverse hasn't published yet (e.g. the current
-    season during preseason, before any games have been played) instead
-    of failing the whole load -- training/prediction just proceeds on
-    whatever seasons actually have data.
     """
     logger.info("Loading weekly stats for seasons=%s", seasons)
-    frames = []
-    for year in seasons:
-        try:
-            frames.append(nfl.import_weekly_data([year], columns=WEEKLY_COLUMNS))
-        except Exception as e:
-            logger.warning("Season %s not available yet, skipping: %s", year, e)
-    if not frames:
-        raise RuntimeError(f"No weekly stats available for any of seasons={seasons}")
-    df = pd.concat(frames, ignore_index=True)
+    df = _load_per_year_safe(
+        lambda yrs: nfl.import_weekly_data(yrs, columns=WEEKLY_COLUMNS),
+        seasons, "weekly stats",
+    )
     df = df[df["season_type"] == "REG"].copy()
     return df.sort_values(["player_id", "season", "week"]).reset_index(drop=True)
 
 
 @lru_cache(maxsize=8)
 def load_schedules(seasons: tuple[int, ...]) -> pd.DataFrame:
-    """Game-level schedule info: matchups, home/away, week, result."""
+    """Game-level schedule info: matchups, home/away, week, result.
+    Comes from one combined file (all seasons + the full upcoming
+    schedule, known in advance), so this doesn't need the per-year
+    skip logic the stat endpoints need."""
     return nfl.import_schedules(list(seasons))
 
 
 @lru_cache(maxsize=8)
 def load_rosters(seasons: tuple[int, ...]) -> pd.DataFrame:
     """Weekly rosters -- used to confirm active status / team for a given week."""
-    return nfl.import_weekly_rosters(list(seasons))
+    return _load_per_year_safe(nfl.import_weekly_rosters, seasons, "rosters")
 
 
 @lru_cache(maxsize=8)
 def load_snap_counts(seasons: tuple[int, ...]) -> pd.DataFrame:
     """Snap-count share -- a strong proxy for role/opportunity."""
-    return nfl.import_snap_counts(list(seasons))
+    return _load_per_year_safe(nfl.import_snap_counts, seasons, "snap counts")
 
 
 @lru_cache(maxsize=8)
 def load_injuries(seasons: tuple[int, ...]) -> pd.DataFrame:
     """Weekly injury report designations."""
-    return nfl.import_injuries(list(seasons))
+    return _load_per_year_safe(nfl.import_injuries, seasons, "injuries")
 
 
 def get_current_week_slate(season: int) -> pd.DataFrame:
@@ -84,16 +94,22 @@ def get_current_week_slate(season: int) -> pd.DataFrame:
     sched = load_schedules((season,))
     upcoming = sched[sched["result"].isna()]
     return upcoming.sort_values(["week", "gameday"])
-    
+
+
 def get_current_season_and_week(today=None) -> tuple[int, int]:
     """
     Determines the current NFL season and week from today's date by
     checking the real schedule -- so the weekly job never needs a
     hardcoded season/week and keeps working automatically every year.
+
+    "Current week" = the week containing the next game that hasn't
+    happened yet on or after today.
     """
     import datetime as _dt
 
     today = today or _dt.date.today()
+    # NFL seasons start in September; games in Jan/early Feb belong to
+    # the previous year's season (e.g. Feb 2026 games are the 2025 season).
     season = today.year if today.month >= 8 else today.year - 1
 
     sched = load_schedules((season,))
@@ -102,6 +118,7 @@ def get_current_season_and_week(today=None) -> tuple[int, int]:
 
     upcoming = sched[sched["gameday"] >= today]
     if upcoming.empty:
+        # Season's over -- fall back to the last played week.
         return season, int(sched["week"].max())
     return season, int(upcoming.sort_values("gameday")["week"].iloc[0])
 
