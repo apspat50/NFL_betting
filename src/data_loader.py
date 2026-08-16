@@ -70,6 +70,26 @@ def get_current_week_slate(season: int) -> pd.DataFrame:
     sched = load_schedules((season,))
     upcoming = sched[sched["result"].isna()]
     return upcoming.sort_values(["week", "gameday"])
+    
+def get_current_season_and_week(today=None) -> tuple[int, int]:
+    """
+    Determines the current NFL season and week from today's date by
+    checking the real schedule -- so the weekly job never needs a
+    hardcoded season/week and keeps working automatically every year.
+    """
+    import datetime as _dt
+
+    today = today or _dt.date.today()
+    season = today.year if today.month >= 8 else today.year - 1
+
+    sched = load_schedules((season,))
+    sched = sched.copy()
+    sched["gameday"] = pd.to_datetime(sched["gameday"]).dt.date
+
+    upcoming = sched[sched["gameday"] >= today]
+    if upcoming.empty:
+        return season, int(sched["week"].max())
+    return season, int(upcoming.sort_values("gameday")["week"].iloc[0])
 
 
 def team_defense_allowed(seasons: tuple[int, ...]) -> pd.DataFrame:
