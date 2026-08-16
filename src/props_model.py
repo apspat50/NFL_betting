@@ -33,6 +33,17 @@ MODELS_DIR = Path(__file__).resolve().parent.parent / "models"
 
 MODEL_TYPES = ("gbr", "rf", "ridge", "hgb")
 
+# Empirically best model type per stat, from backtest.py comparisons
+# against a real holdout season. Used when train_models.py is run with
+# --model-type auto. Update this if a future backtest run finds a
+# different winner.
+BEST_MODEL_TYPES = {
+    "passing_yards": "ridge",
+    "rushing_yards": "rf",
+    "receiving_yards": "gbr",
+    "receptions": "rf",
+}
+
 
 def _make_regressor(model_type: str):
     if model_type == "gbr":
