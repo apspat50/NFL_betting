@@ -35,6 +35,10 @@ jobs:
           pip install nfl_data_py --no-deps
           pip install -r requirements.txt
 
+      - name: Train models
+        run: |
+          python scripts/train_models.py --seasons 2019 2020 2021 2022 2023 2024
+
       - name: Run picks for today's game(s)
         env:
           PARLAYAPI_KEY: ${{ secrets.PARLAYAPI_KEY }}
