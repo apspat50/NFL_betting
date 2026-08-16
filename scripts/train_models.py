@@ -35,9 +35,11 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--seasons", type=int, nargs="+", required=True,
                          help="Seasons to train on, e.g. --seasons 2019 2020 2021 2022 2023 2024")
-    parser.add_argument("--model-type", choices=MODEL_TYPES, default="gbr",
-                         help="Underlying regressor/classifier type. Use scripts/backtest.py "
-                              "with --model-types to compare before picking one for production.")
+    parser.add_argument("--model-type", choices=list(MODEL_TYPES) + ["auto"], default="gbr",
+                             help="Underlying regressor/classifier type, or 'auto' to use the "
+                                  "empirically best type per stat (see props_model.BEST_MODEL_TYPES). "
+                                  "Use scripts/backtest.py with --model-types to compare before "
+                                  "picking one for production.")
     args = parser.parse_args()
     seasons = tuple(args.seasons)
 
