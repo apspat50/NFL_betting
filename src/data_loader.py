@@ -67,8 +67,18 @@ def load_schedules(seasons: tuple[int, ...]) -> pd.DataFrame:
     """Game-level schedule info: matchups, home/away, week, result.
     Comes from one combined file (all seasons + the full upcoming
     schedule, known in advance), so this doesn't need the per-year
-    skip logic the stat endpoints need."""
-    return nfl.import_schedules(list(seasons))
+    skip logic the stat endpoints need.
+
+    Filtered to regular-season games only -- nflverse's schedule
+    includes preseason and postseason too, and preseason weeks are
+    numbered starting at 1 just like regular season, which would
+    otherwise collide with real week numbers and corrupt matchup/
+    opponent-strength features.
+    """
+    sched = nfl.import_schedules(list(seasons))
+    if "game_type" in sched.columns:
+        sched = sched[sched["game_type"] == "REG"].copy()
+    return sched
 
 
 @lru_cache(maxsize=8)
