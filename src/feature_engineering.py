@@ -99,6 +99,14 @@ def build_feature_set(
     # Drop rows with no prior-game history -- can't predict a player's
     # week 1 debut off rolling averages, and that's fine for a props model.
     df = df[df[f"{stat}_games_played"] >= 1]
+    # Drop players with no real history of this stat (e.g. a WR with a
+    # season passing-yards average of 0). Without this, a model trained
+    # on "passing_yards" is really training on "every offensive player,
+    # 90% of whom never throw a pass" -- which makes both the model and
+    # the naive baseline look artificially accurate by coasting on easy
+    # zeros, instead of actually being tested on the players real prop
+    # lines exist for.
+    df = df[df[f"{stat}_szn_avg"] > 0]
     return df
 
 
