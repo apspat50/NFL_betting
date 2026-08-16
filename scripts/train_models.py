@@ -57,7 +57,11 @@ def main():
     weekly = weekly.merge(matchups, on=["season", "week", "recent_team"], how="left")
 
     train_all(weekly, snaps, defense, weather, injuries, model_type=args.model_type)
-    train_td_model(weekly, snaps, defense, weather, injuries, model_type=args.model_type)
+    # No TD-specific model-type comparison has been run yet (would need
+    # an AUC-based backtest, not MAE), so "auto" falls back to a fixed
+    # default here rather than an undefined per-stat lookup.
+    td_model_type = "gbr" if args.model_type == "auto" else args.model_type
+    train_td_model(weekly, snaps, defense, weather, injuries, model_type=td_model_type)
     print(f"Trained and saved models (type={args.model_type}) for seasons {seasons}. "
           f"See models/ directory.")
 
