@@ -114,13 +114,17 @@ def train_all(
     injuries: pd.DataFrame,
     model_type: str = "gbr",
 ) -> dict[str, PropModel]:
-    """Trains and saves one model per supported prop stat."""
+    """Trains and saves one model per supported prop stat.
+
+    model_type="auto" uses BEST_MODEL_TYPES to pick a different
+    (empirically best) model type per stat, rather than one type for all.
+    """
     trained = {}
     for stat in FEATURE_COLUMNS:
         logger.info("Building feature set for %s", stat)
         feat_df = build_feature_set(weekly, snaps, defense_allowed, weather, injuries, stat)
-        model = PropModel(stat, model_type=model_type).fit(feat_df)
+        chosen_type = BEST_MODEL_TYPES.get(stat, "gbr") if model_type == "auto" else model_type
+        model = PropModel(stat, model_type=chosen_type).fit(feat_df)
         model.save()
         trained[stat] = model
     return trained
-    
