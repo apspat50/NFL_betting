@@ -30,13 +30,27 @@ WEEKLY_COLUMNS = [
 
 
 @lru_cache(maxsize=8)
+@lru_cache(maxsize=8)
 def load_weekly_stats(seasons: tuple[int, ...]) -> pd.DataFrame:
     """
     Weekly player-level stat lines for the given seasons.
     Cached in-process since this is re-used across every prop model.
+
+    Skips any season nflverse hasn't published yet (e.g. the current
+    season during preseason, before any games have been played) instead
+    of failing the whole load -- training/prediction just proceeds on
+    whatever seasons actually have data.
     """
     logger.info("Loading weekly stats for seasons=%s", seasons)
-    df = nfl.import_weekly_data(list(seasons), columns=WEEKLY_COLUMNS)
+    frames = []
+    for year in seasons:
+        try:
+            frames.append(nfl.import_weekly_data([year], columns=WEEKLY_COLUMNS))
+        except Exception as e:
+            logger.warning("Season %s not available yet, skipping: %s", year, e)
+    if not frames:
+        raise RuntimeError(f"No weekly stats available for any of seasons={seasons}")
+    df = pd.concat(frames, ignore_index=True)
     df = df[df["season_type"] == "REG"].copy()
     return df.sort_values(["player_id", "season", "week"]).reset_index(drop=True)
 
