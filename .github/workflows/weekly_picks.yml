@@ -19,6 +19,10 @@ on:
       game_date:
         description: "YYYY-MM-DD to filter picks to (leave blank for today)"
         required: false
+      model_type:
+        description: "Model type for training (gbr/rf/ridge/hgb) -- see scripts/backtest.py to compare"
+        required: false
+        default: "gbr"
 
 jobs:
   run-picks:
@@ -37,7 +41,8 @@ jobs:
 
       - name: Train models
         run: |
-          python scripts/train_models.py --seasons 2019 2020 2021 2022 2023 2024
+          python scripts/train_models.py --seasons 2019 2020 2021 2022 2023 2024 \
+            --model-type "${{ github.event.inputs.model_type || 'gbr' }}"
 
       - name: Run picks for today's game(s)
         env:

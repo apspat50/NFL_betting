@@ -39,6 +39,7 @@ MARKET_MAP = {
     "player_rush_yds": "rushing_yards",
     "player_reception_yds": "receiving_yards",
     "player_receptions": "receptions",
+    "player_anytime_td": "anytime_td",
 }
 
 
@@ -100,7 +101,59 @@ class OddsClient:
                             "bookmaker": bookmaker["key"],
                             "stat": stat,
                             "player_name": outcome.get("description"),
-                            "side": outcome.get("name"),  # "Over" / "Under"
+                            "side": outcome.get("name"),  # "Over" / "Under" / "Yes"
+                            "line": outcome.get("point"),
+                            "price": outcome.get("price"),
+                        })
+        return pd.DataFrame(rows)
+
+    def fetch_historical_closing_props(self, date_iso: str, markets: list[str] | None = None) -> "pd.DataFrame":  # noqa: F821
+        """
+        Pulls closing prop lines for a past date -- the real test of
+        whether the model would have beaten the actual market, not just
+        a naive statistical baseline.
+
+        CAUTION: ParlayAPI's documentation only showed a worked example
+        for game-line (h2h) historical data, not player props
+        specifically. This may or may not return data depending on
+        ParlayAPI's actual coverage -- this method is best-effort and
+        the calling script should handle empty/missing results
+        gracefully rather than assume this always works.
+        """
+        import pandas as pd
+
+        markets = markets or list(MARKET_MAP.keys())
+        try:
+            resp = requests.get(
+                f"{BASE_URL}/historical/sports/{SPORT_KEY}/closing-odds",
+                params={"date": date_iso, "regions": "us", "markets": ",".join(markets)},
+                headers=self.headers,
+                timeout=20,
+            )
+            resp.raise_for_status()
+            data = resp.json()
+        except requests.HTTPError as e:
+            logger.warning("Historical closing odds unavailable for %s: %s", date_iso, e)
+            return pd.DataFrame()
+        except Exception as e:
+            logger.warning("Unexpected error fetching historical odds for %s: %s", date_iso, e)
+            return pd.DataFrame()
+
+        rows = []
+        for game in data if isinstance(data, list) else []:
+            for bookmaker in game.get("bookmakers", []):
+                for market in bookmaker.get("markets", []):
+                    stat = MARKET_MAP.get(market["key"])
+                    if not stat:
+                        continue
+                    for outcome in market.get("outcomes", []):
+                        rows.append({
+                            "event_id": game.get("id"),
+                            "commence_time": game.get("commence_time"),
+                            "bookmaker": bookmaker["key"],
+                            "stat": stat,
+                            "player_name": outcome.get("description"),
+                            "side": outcome.get("name"),
                             "line": outcome.get("point"),
                             "price": outcome.get("price"),
                         })

@@ -58,7 +58,14 @@ def find_edges(
 
     Returns picks where the model's edge over the book's implied
     probability exceeds `min_edge_pct`, sorted by edge descending.
+
+    Only handles Over/Under-style markets (yardage, receptions) -- use
+    find_td_edges for the single-sided anytime-TD-scorer market.
     """
+    odds = odds[odds["stat"] != "anytime_td"]
+    if odds.empty:
+        return odds
+
     merged = odds.merge(
         predictions[["player_name", "stat", "predicted_mean", "predicted_std"]],
         on=["player_name", "stat"],
@@ -83,5 +90,44 @@ def find_edges(
         merged.sort_values("edge", ascending=False)
         .drop_duplicates(subset=["player_name", "stat", "side"])
     )
+    picks = best[best["edge"] >= min_edge_pct].sort_values("edge", ascending=False)
+    return picks.reset_index(drop=True)
+
+
+def find_td_edges(
+    td_predictions: pd.DataFrame,
+    odds: pd.DataFrame,
+    min_edge_pct: float = 0.03,
+) -> pd.DataFrame:
+    """
+    Anytime-TD-scorer props are single-sided (Yes only, no line) -- the
+    edge is just model probability of scoring vs. the book's implied
+    probability from the American price directly, no normal-
+    approximation needed since there's no Over/Under to model.
+
+    td_predictions: one row per player with predicted_prob (from
+    AnytimeTDModel.predict).
+    """
+    td_odds = odds[odds["stat"] == "anytime_td"].copy()
+    if td_odds.empty:
+        return td_odds
+
+    merged = td_odds.merge(
+        td_predictions[["player_name", "predicted_prob"]],
+        on="player_name",
+        how="inner",
+    )
+    if merged.empty:
+        return merged
+
+    merged["implied_prob"] = merged["price"].apply(american_to_prob)
+    merged["decimal_odds"] = merged["price"].apply(american_to_decimal)
+    merged["model_prob"] = merged["predicted_prob"]
+    merged["edge"] = merged["model_prob"] - merged["implied_prob"]
+    merged["kelly_stake_pct"] = merged.apply(
+        lambda r: kelly_fraction(r["model_prob"], r["decimal_odds"]), axis=1
+    )
+
+    best = merged.sort_values("edge", ascending=False).drop_duplicates(subset=["player_name"])
     picks = best[best["edge"] >= min_edge_pct].sort_values("edge", ascending=False)
     return picks.reset_index(drop=True)

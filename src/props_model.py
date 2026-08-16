@@ -1,16 +1,16 @@
 """
 props_model.py
 
-Trains one gradient-boosted regression model per prop category
-(passing/rushing/receiving yards, receptions) and produces a predicted
-mean plus a residual-based standard deviation, which together let
-edge_finder.py compute an over/under probability against any sportsbook
-line via a normal approximation.
+Trains one regression model per prop category (passing/rushing/receiving
+yards, receptions) and produces a predicted mean plus a residual-based
+standard deviation, which together let edge_finder.py compute an
+over/under probability against any sportsbook line via a normal
+approximation.
 
-Simpler than the MLB system's per-pitch model on purpose: one model type
-(LightGBM/GradientBoosting), one feature pipeline shared across stat
-categories, trained on 3-8 years of clean nflverse history instead of
-custom-scraped data.
+Supports multiple underlying model types (gradient boosting, random
+forest, ridge regression, histogram gradient boosting) so different
+algorithms can be compared for accuracy via scripts/backtest.py before
+committing to one for production.
 """
 
 from __future__ import annotations
@@ -21,7 +21,8 @@ from pathlib import Path
 import joblib
 import numpy as np
 import pandas as pd
-from sklearn.ensemble import GradientBoostingRegressor
+from sklearn.ensemble import GradientBoostingRegressor, RandomForestRegressor, HistGradientBoostingRegressor
+from sklearn.linear_model import Ridge
 from sklearn.model_selection import TimeSeriesSplit
 from sklearn.metrics import mean_absolute_error
 
@@ -30,20 +31,33 @@ from feature_engineering import FEATURE_COLUMNS, build_feature_set
 logger = logging.getLogger(__name__)
 MODELS_DIR = Path(__file__).resolve().parent.parent / "models"
 
+MODEL_TYPES = ("gbr", "rf", "ridge", "hgb")
+
+
+def _make_regressor(model_type: str):
+    if model_type == "gbr":
+        return GradientBoostingRegressor(
+            n_estimators=300, max_depth=3, learning_rate=0.05, subsample=0.8, random_state=42,
+        )
+    if model_type == "rf":
+        return RandomForestRegressor(
+            n_estimators=300, max_depth=6, random_state=42, n_jobs=-1,
+        )
+    if model_type == "ridge":
+        return Ridge(alpha=1.0)
+    if model_type == "hgb":
+        return HistGradientBoostingRegressor(max_depth=6, random_state=42)
+    raise ValueError(f"Unknown model_type '{model_type}'. Choose from {MODEL_TYPES}")
+
 
 class PropModel:
-    def __init__(self, stat: str):
+    def __init__(self, stat: str, model_type: str = "gbr"):
         if stat not in FEATURE_COLUMNS:
             raise ValueError(f"Unsupported stat '{stat}'. Choose from {list(FEATURE_COLUMNS)}")
         self.stat = stat
+        self.model_type = model_type
         self.features = FEATURE_COLUMNS[stat]
-        self.model = GradientBoostingRegressor(
-            n_estimators=300,
-            max_depth=3,
-            learning_rate=0.05,
-            subsample=0.8,
-            random_state=42,
-        )
+        self.model = _make_regressor(model_type)
         self.residual_std_: float | None = None
 
     def fit(self, df: pd.DataFrame) -> "PropModel":
@@ -51,19 +65,15 @@ class PropModel:
         X, y = data[self.features], data[self.stat]
 
         # Time-ordered CV so we never train on a player's future to predict
-        # their past -- the same discipline the MLB system's model_trainer
-        # should have had, made non-optional here.
+        # their past.
         tscv = TimeSeriesSplit(n_splits=5)
         maes = []
         for train_idx, test_idx in tscv.split(X):
-            m = GradientBoostingRegressor(
-                n_estimators=300, max_depth=3, learning_rate=0.05,
-                subsample=0.8, random_state=42,
-            )
+            m = _make_regressor(self.model_type)
             m.fit(X.iloc[train_idx], y.iloc[train_idx])
             preds = m.predict(X.iloc[test_idx])
             maes.append(mean_absolute_error(y.iloc[test_idx], preds))
-        logger.info("%s: CV MAE across folds = %.2f (mean)", self.stat, np.mean(maes))
+        logger.info("%s (%s): CV MAE across folds = %.2f (mean)", self.stat, self.model_type, np.mean(maes))
 
         self.model.fit(X, y)
         residuals = y - self.model.predict(X)
@@ -89,13 +99,16 @@ def train_all(
     weekly: pd.DataFrame,
     snaps: pd.DataFrame,
     defense_allowed: pd.DataFrame,
+    weather: pd.DataFrame,
+    injuries: pd.DataFrame,
+    model_type: str = "gbr",
 ) -> dict[str, PropModel]:
     """Trains and saves one model per supported prop stat."""
     trained = {}
     for stat in FEATURE_COLUMNS:
         logger.info("Building feature set for %s", stat)
-        feat_df = build_feature_set(weekly, snaps, defense_allowed, stat)
-        model = PropModel(stat).fit(feat_df)
+        feat_df = build_feature_set(weekly, snaps, defense_allowed, weather, injuries, stat)
+        model = PropModel(stat, model_type=model_type).fit(feat_df)
         model.save()
         trained[stat] = model
     return trained

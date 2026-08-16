@@ -67,18 +67,8 @@ def load_schedules(seasons: tuple[int, ...]) -> pd.DataFrame:
     """Game-level schedule info: matchups, home/away, week, result.
     Comes from one combined file (all seasons + the full upcoming
     schedule, known in advance), so this doesn't need the per-year
-    skip logic the stat endpoints need.
-
-    Filtered to regular-season games only -- nflverse's schedule
-    includes preseason and postseason too, and preseason weeks are
-    numbered starting at 1 just like regular season, which would
-    otherwise collide with real week numbers and corrupt matchup/
-    opponent-strength features.
-    """
-    sched = nfl.import_schedules(list(seasons))
-    if "game_type" in sched.columns:
-        sched = sched[sched["game_type"] == "REG"].copy()
-    return sched
+    skip logic the stat endpoints need."""
+    return nfl.import_schedules(list(seasons))
 
 
 @lru_cache(maxsize=8)
@@ -133,6 +123,38 @@ def get_current_season_and_week(today=None) -> tuple[int, int]:
     return season, int(upcoming.sort_values("gameday")["week"].iloc[0])
 
 
+def get_weather_features(seasons: tuple[int, ...]) -> pd.DataFrame:
+    """
+    Game-level weather (temperature, wind, dome/outdoor) per team per
+    week, derived from the schedule. Defensive about column names since
+    this can't be verified against a live network call in every
+    environment -- if the expected weather columns aren't present in a
+    given nflverse release, this degrades to "no weather signal"
+    (neutral defaults) rather than crashing the pipeline.
+    """
+    sched = load_schedules(seasons).copy()
+    for col in ("roof", "temp", "wind"):
+        if col not in sched.columns:
+            sched[col] = pd.NA
+
+    cols = ["season", "week", "home_team", "away_team", "roof", "temp", "wind"]
+    sched = sched[cols]
+
+    home = sched.rename(columns={"home_team": "recent_team"}).drop(columns=["away_team"])
+    away = sched.rename(columns={"away_team": "recent_team"}).drop(columns=["home_team"])
+    weather = pd.concat([home, away], ignore_index=True)
+
+    weather["is_dome"] = weather["roof"].isin(["dome", "closed"]).astype(int)
+    # Dome/closed games have no real outdoor conditions -- fill with
+    # neutral values so the model doesn't misread a missing reading as
+    # "extreme weather".
+    median_temp = weather["temp"].median()
+    weather["temp"] = weather["temp"].fillna(median_temp if pd.notna(median_temp) else 65)
+    weather["wind"] = weather["wind"].fillna(0)
+
+    return weather[["season", "week", "recent_team", "temp", "wind", "is_dome"]]
+
+
 def team_defense_allowed(seasons: tuple[int, ...]) -> pd.DataFrame:
     """
     Per-team, per-week yards/TDs allowed by category, derived from opponents'
@@ -158,8 +180,13 @@ def team_defense_allowed(seasons: tuple[int, ...]) -> pd.DataFrame:
             receptions_allowed=("receptions", "sum"),
             pass_td_allowed=("passing_tds", "sum"),
             rush_td_allowed=("rushing_tds", "sum"),
+            receiving_td_allowed=("receiving_tds", "sum"),
         )
         .reset_index()
         .rename(columns={"opponent_team": "team"})
     )
+    # Total offensive TDs allowed (rush + receiving -- not passing TDs,
+    # since that's the QB's own stat, not something scored against the
+    # defense in the "anytime scorer" sense) feeds the anytime-TD model.
+    allowed["total_td_allowed"] = allowed["rush_td_allowed"] + allowed["receiving_td_allowed"]
     return allowed
